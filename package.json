@@ -1,0 +1,19 @@
+{
+  "name": "nrc2strava",
+  "version": "1.0.0",
+  "description": "Import activities from Nike Run Club to Strava",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "author": "Alex Pryshchepa",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^8.2.0",
+    "form-data": "^3.0.0",
+    "lodash": "^4.17.15",
+    "node-fetch": "^2.6.0",
+    "rimraf": "^3.0.2",
+    "xmlbuilder": "^14.0.0"
+  }
+}
