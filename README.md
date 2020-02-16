@@ -1,6 +1,6 @@
 # nrc2strava
 
-Most accurate way to import NRC & NTC activities to Strava (includes elevation & heart rate data)
+Most accurate way to migrate from NRC to Strava (includes elevation & heart rate data)
 
 ## Install
 
