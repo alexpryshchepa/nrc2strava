@@ -27,19 +27,37 @@ const nikeEndpoints = {
     `https://api.nike.com/sport/v3/me/activity/${uuid}?metrics=ALL`
 };
 
-const nikeFetch = url =>
+const getNikeBearer = async () => {
+  const result = await fetch(
+    'https://api.nike.com/idn/shim/oauth/2.0/token',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        'client_id': process.env.NIKE_CLIENT_ID,
+        'grant_type': 'refresh_token',
+        'ux_id': 'com.nike.sport.running.ios.6.5.1',
+        'refresh_token': process.env.NIKE_REFRESH_TOKEN
+      }),
+      headers: { 'Content-Type': 'application/json' }
+    }
+  )
+  const response = await result.json();
+  return response.access_token;
+}
+
+const nikeFetch = (url, token) =>
   fetch(url, {
     headers: {
-      Authorization: `Bearer ${process.env.NIKE_BEARER}`
+      Authorization: `Bearer ${token}`
     }
   });
 
 const getNikeActivitiesIds = async () => {
   let ids = [];
   let timeOffset = 0;
-
+  const nikeToken = await getNikeBearer();
   while (timeOffset !== undefined) {
-    await nikeFetch(nikeEndpoints.getActivitiesByTime(timeOffset))
+    await nikeFetch(nikeEndpoints.getActivitiesByTime(timeOffset), nikeToken)
       .then(res => {
         if (res.status === 401) {
           return Promise.reject("Nike token is not valid");
@@ -179,89 +197,112 @@ const buildGpx = data => {
 };
 
 if (process.argv.includes("nike") && !process.argv.includes("strava")) {
-  rimraf(path.join(__dirname, activitiesFolder), () => {
-    fs.mkdirSync(path.join(__dirname, activitiesFolder));
+  (async () => {
+    const nikeToken = await getNikeBearer();
+    rimraf(path.join(__dirname, activitiesFolder), () => {
+      fs.mkdirSync(path.join(__dirname, activitiesFolder));
+      getNikeActivitiesIds().then(ids => {
+        ids.map(id => {
+          nikeFetch(nikeEndpoints.getActivityById(id), nikeToken)
+            .then(res => {
+              if (res.status === 401) {
+                return Promise.reject("Nike token is not valid");
+              }
 
-    getNikeActivitiesIds().then(ids => {
-      ids.map(id => {
-        nikeFetch(nikeEndpoints.getActivityById(id))
-          .then(res => {
-            if (res.status === 401) {
-              return Promise.reject("Nike token is not valid");
-            }
+              if (res.ok) return res.json();
 
-            if (res.ok) return res.json();
+              return Promise.reject("Something went wrong");
+            })
+            .then(async data => {
+              if (data.type !== "run") {
+                return Promise.reject("Is not a running activity");
+              }
 
-            return Promise.reject("Something went wrong");
-          })
-          .then(async data => {
-            if (data.type !== "run") {
-              return Promise.reject("Is not a running activity");
-            }
+              if (
+                !data.metric_types.includes("latitude") &&
+                !data.metric_types.includes("longitude")
+              ) {
+                return Promise.reject("Activity without gps data");
+              }
 
-            if (
-              !data.metric_types.includes("latitude") &&
-              !data.metric_types.includes("longitude")
-            ) {
-              return Promise.reject("Activity without gps data");
-            }
+              return await new Promise((resolve, reject) => {
+                fs.writeFile(
+                  path.join(
+                    __dirname,
+                    activitiesFolder,
+                    `activity_${data.id}.gpx`
+                  ),
+                  buildGpx(data),
+                  err => {
+                    if (err) {
+                      reject(err);
+                    }
 
-            return await new Promise((resolve, reject) => {
-              fs.writeFile(
-                path.join(
-                  __dirname,
-                  activitiesFolder,
-                  `activity_${data.id}.gpx`
-                ),
-                buildGpx(data),
-                err => {
-                  if (err) {
-                    reject(err);
+                    resolve(`Successfully created ${id} activity!`);
                   }
-
-                  resolve(`Successfully created ${id} activity!`);
-                }
-              );
-            });
-          })
-          .then(msg => console.log(msg))
-          .catch(err => console.log(err));
+                );
+              });
+            })
+            .then(msg => console.log(msg))
+            .catch(err => console.log(err));
+        });
       });
     });
-  });
+  })();
 }
 
 if (process.argv.includes("strava") && !process.argv.includes("nike")) {
-  fs.readdir(activitiesFolder, async (err, files) => {
-    Promise.all(
-      files.map(file => {
-        const form = new FormData();
+  if ([process.env.STRAVA_CLIENT_ID, process.env.STRAVA_CLIENT_SECRET, process.env.STRAVA_REFRESH_TOKEN].filter(v => !!v).length !== 3) {
+    throw new Error('Please set your application paramenters in .env');
+  }
 
-        form.append("description", "Uploaded from NRC");
-        form.append("data_type", "gpx");
-        form.append("file", fs.createReadStream(`./activities/${file}`));
+  (async () => {
+    const refreshParams = new URLSearchParams();
+    refreshParams.append('client_id', process.env.STRAVA_CLIENT_ID);
+    refreshParams.append('client_secret', process.env.STRAVA_CLIENT_SECRET);
+    refreshParams.append('grant_type', 'refresh_token');
+    refreshParams.append('refresh_token', process.env.STRAVA_REFRESH_TOKEN);
+    const tokenResponse = await fetch("https://www.strava.com/api/v3/oauth/token", {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      method: "POST",
+      body: refreshParams,
+    })
 
-        return fetch("https://www.strava.com/api/v3/uploads", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${process.env.STRAVA_BEARER}`
-          },
-          body: form
-        })
-          .then(res => {
-            if (res.status === 401) {
-              return Promise.reject("Strava token is not valid");
-            }
+    const response = await tokenResponse.json();
 
-            if (res.ok) return Promise.resolve(`Activity ${file} uploaded`);
+    fs.readdir(activitiesFolder, async (err, files) => {
+      Promise.all(
+        files.map(file => {
+          const form = new FormData();
 
-            return Promise.reject("Something went wrong");
+          form.append("description", "Uploaded from NRC");
+          form.append("data_type", "gpx");
+          form.append("file", fs.createReadStream(`./activities/${file}`));
+
+          return fetch("https://www.strava.com/api/v3/uploads", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${response.access_token}`
+            },
+            body: form
           })
-          .then(msg => console.log(msg))
-          .catch(err => console.log(err));
-      })
-    )
-      .then(() => console.log("Finish"))
-      .catch(err => console.log(err));
-  });
+            .then(res => {
+              if (res.status === 401) {
+                return Promise.reject("Strava token is not valid");
+              }
+
+              if (res.ok) return Promise.resolve(`Activity ${file} uploaded`);
+
+              return Promise.reject("Something went wrong");
+            })
+            .then(msg => console.log(msg))
+            .catch(err => console.log(err));
+        })
+      )
+        .then(() => console.log("Finish"))
+        .catch(err => console.log(err));
+    });
+  })();
 }
